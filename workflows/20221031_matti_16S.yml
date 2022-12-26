@@ -1,0 +1,8 @@
+DIR_assembly: "/home/zeqianli/project/zeqianli/Kuehn/Carbon/data/matti/contigs"
+DIR_prodigal: "/home/zeqianli/project/zeqianli/Kuehn/Carbon/data/matti/prodigal"
+DIR_16S: "/home/zeqianli/project/zeqianli/Kuehn/Carbon/data/matti/16S"
+FILE_16S: "/home/zeqianli/project/zeqianli/Kuehn/Carbon/data/matti/matti_16S.fna"
+FILE_16S_msa: "/home/zeqianli/project/zeqianli/Kuehn/Carbon/data/matti/matti_16S.aligned.fna"
+FILE_16S_tree: "/home/zeqianli/project/zeqianli/Kuehn/Carbon/data/matti/matti_16S.tree"
+#threads: 1 # for testing
+threads: 28 # for the actual run

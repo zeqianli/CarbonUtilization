@@ -1,0 +1,32 @@
+<!-- Complete workflow:
+- NCBI:
+    - From raw reads: 
+        1. Downlaod raw reads to DIR_ncbi_raw
+        2. Copy and unzip to DIR_raw_reads
+        3. Assemble to DIR_assembly
+        4. Copy the contig files out to the parent folder
+        4. Same downstream. 
+    - From contigs: 
+        1. Download full ncbi data to DIR_ncbi.
+        2. Unzip in DIR_ncbi.
+        3. Copy the contig file to DIR_assembly
+        4. Same downstream. 
+- NextSeq
+    0. (This is not part of this pipeline: rename raw reads to clearned NextSeq data folder.)
+    1. Copy and unzip to DIR_raw_reads. 
+    2. Same as before.  -->
+
+
+    
+
+
+Dry run: 
+
+```
+snakemake --cores all -n
+```
+
+Actual run:
+```
+snakemake --cores 28 --conda-frontend conda --use-conda
+```

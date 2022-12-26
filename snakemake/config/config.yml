@@ -1,0 +1,57 @@
+# Paths
+
+DIR_output: "/home/zeqianli/project/zeqian/Carbon/data/zeqian"
+
+# Meta data sheet
+#FILE_meta_data: "/home/zeqian/Documents/Kuehn/Carbon/data/meta_20220921.csv" # List of strains that run through the pipeline
+#FILE_meta_data: "/home/zeqian/Documents/Kuehn/Carbon/snakemake/config/meta_test.csv"
+# FILE_ncbi_accession: "/home/zeqian/Documents/Kuehn/Carbon/data/ncbi_download_list.csv" # List of NCBI accession IDs to be downloaed 
+
+# FILE_sample_list: "/home/zeqianli/Kuehn/Carbon/snakemake/config/strains_test.txt"
+
+# Raw data 
+# DIR_ncbi: "ncbi" # NCBI datasets command line tool download directory
+# DIR_ncbi_faa: "faa"
+# DIR_ncbi_raw: "ncbi_raw"
+# DIR_nextseq_raw: "NextSeq_cleaned/raw" # Raw reads of my NextSeq sequencing run
+# DIR_rast_raw: "raw/osfstorage-archive/annotations" # Deprecated. Raw RAST data. 
+# DIR_rast: "rast_output" # Deprecated. Copied RAST data. 
+
+# Genomes
+# DIR_raw_reads: "raw_reads" # Copied and unzipped raw reads 
+# DIR_trimmed_reads: "trimmed_reads"
+# DIR_unicycler: "unicycler" # unicycler files
+DIR_assembly: "assembly" # Assembly files
+DIR_faa: "faa" # faa files
+DIR_fna: "fna" # faa files
+# PATH_adapters: "/home/zeqian/Documents/Kuehn/Carbon/snakemake/config/trimmomatic_adapters.fa" 
+
+
+# Annotation
+DIR_16S: "16S"
+DIR_bakta: "bakta"
+PATH_bakta_db: "/home/zeqianli/project/zeqianli/bin/baktadb/db"
+DIR_KOFAMSCAN: "kofamscan" # KofamScan output
+PATH_KOFAMSCAN_PROFILES: "/home/zeqianli/project/zeqianli/bin/kofamscan/profiles" # Database path for KofamScan
+PATH_KOFAMSCAN_KO_LIST: "/home/zeqianli/project/zeqianli/bin/kofamscan/ko_list" # KO list path for KofamScan
+DIR_TEMP: ".tmp" # Temperature output directory for KofamScan
+
+# 16S and tree
+# FILE_16S: "all_16S.fna"
+# FILE_16S_msa: "all_16S.msa"
+# FILE_16S_tree: "all_16S.tree"
+
+# FBA
+DIR_CARVEME: "carveme" # Carveme output
+# FILE_CARVEME_MEDIA: "/home/zeqian/Documents/Kuehn/Carbon/snakemake/config/M9_succ.tsv" # Carveme media file 
+DIR_MEMOTE: "memote" # Memote output
+DIR_FBA_PREDICTION: "fba_prediction" # FBA prediction output
+FILE_BIGG_METABOLITES: "/home/zeqianli/Kuehn/Carbon/snakemake/config/bigg_models_metabolites.txt" # BIGG metabolite file 
+FILE_INITIAL_MEDIUM: "/home/zeqianli/Kuehn/Carbon/snakemake/config/media_cfree.tsv" # Initial c-free medium for FBA simulation
+# FILE_FBA_GROWTH_MATRIX: "fba_prediction/growth_matrix.csv" # Deprecated. FBA growth matrix (no gap-filling). 
+# FILE_FBA_GAPFILL_GROWTH_MATRIX: "fba_prediction/growth_matrix_gapfill.csv" # Deprecated. FBA growth matrix (with gap-filling). 
+
+
+# Parameters
+threads: 28
+fba_growth_threshold: 0.01
