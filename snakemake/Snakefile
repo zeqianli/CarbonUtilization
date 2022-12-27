@@ -31,43 +31,19 @@ with open("output/samples.txt",'w') as f:
 
 rule all:
     input:
-        #expand(os.path.join(config['DIR_ncbi_raw'],"{sample}.sra"),sample=meta[meta['acc_type']=='raw_reads']['strain'].values), # NCBI sra (for raw reads)
-        #expand(os.path.join(config['DIR_ncbi'],"{sample}.zip"),sample=meta[meta['acc_type']=='assembly']['strain'].values), # NCBI assemblies
-        #expand(os.path.join(config['DIR_raw_reads'],"{sample}_R1.fastq"),sample=meta[~(meta['acc_type']=='assembly')]['strain'].values), # Raw reads,
-        #expand(os.path.join(config['DIR_trimmed_reads'],"{sample}_R1.fastq"),sample=meta[~(meta['acc_type']=='assembly')]['strain'].values), # Raw reads
-        #expand(os.path.join(config['DIR_unicycler'],"{sample}"),sample=meta[~(meta['acc_type']=='assembly')]['strain'].values), # Raw reads
-        expand(os.path.join(config['DIR_assembly'],"{sample}.fasta"),sample=samples), # assemblies
-        # expand(os.path.join(config['DIR_bakta'],'{sample}'),sample=samples), # annotations
+        expand(os.path.join(config['DIR_assembly'],"{sample}.fasta"),sample=samples), # assemblies        
         expand(os.path.join(config['DIR_faa'],'{sample}.faa'),sample=samples), # faa files
         expand(os.path.join(config['DIR_fna'],'{sample}.fna'),sample=samples), # fna files
-        expand(os.path.join(config['DIR_16S'],'{sample}.16S.fna'),sample=samples), # 16S sequences
-        #config['FILE_16S'], # concatenated 16S sequences
-        #config['FILE_16S_tree'], # 16S tree
-        expand(os.path.join(config['DIR_CARVEME'],"{sample}.xml"),sample=samples), # gap-filled carveme models
-        #expand(os.path.join(config['DIR_MEMOTE'],"{sample}.html"),sample=samples), # memote report 
+        expand(os.path.join(config['DIR_16S'],'{sample}.16S.fna'),sample=samples), # 16S sequences        
+        expand(os.path.join(config['DIR_CARVEME'],"{sample}.xml"),sample=samples), # gap-filled carveme models        
         expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}.csv'),sample=samples), # fba predictions
         expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_force_uptake.csv'),sample=samples), # fba predictions with forced uptake
-        expand(os.path.join(config['DIR_CARVEME'],"{sample}_gapfill.xml"),sample=samples), # gap-filled carveme models
-        #expand(os.path.join(config['DIR_MEMOTE'],"{sample}_gapfill.html"),sample=samples), # memote report 
+        expand(os.path.join(config['DIR_CARVEME'],"{sample}_gapfill.xml"),sample=samples), # gap-filled carveme models        
         expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_gapfill.csv'),sample=samples), # fba predictions
-        expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_gapfill_force_uptake.csv'),sample=samples), # fba predictions with forced uptake
-        # os.path.join(config['DIR_FBA_PREDICTION'],'growth_matrix_gapfill.csv'), # fba growth matrix 
-        # os.path.join(config['DIR_FBA_PREDICTION'],'growth_matrix_gapfill_force_uptake.csv'), # fba growth matrix with forced uptake
+        expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_gapfill_force_uptake.csv'),sample=samples),
         expand(os.path.join(config['DIR_KOFAMSCAN'],'{sample}.ko'),sample=samples) # KOfamscan results
 
-#include: "rules/prepare_files.smk" 
-#include: "rules/trim.smk"
-#include: "rules/assembly.smk"
 include: "rules/annotation.smk"
 include: "rules/16S.smk"
 include: "rules/build_models.smk"
 include: "rules/run_fba.smk"
-
-
-#expand(os.path.join(config['DIR_rast'],"{sample}.txt"),sample=meta[(meta['genome_available']) & (meta['genome_source']=='rast')]['strain'].tolist()), # RAST genomes
-#expand(os.path.join(config['DIR_faa'],"{sample}.faa.gz"),sample=samples), # faa 
-# expand(os.path.join(config['DIR_CARVEME'],"{sample}.xml"),sample=samples),  
-# expand(os.path.join(config['DIR_MEMOTE'],"{sample}.html"),sample=samples),
-# expand(os.path.join(config['DIR_MEMOTE'],"{sample}_diff.html"),sample=samples),
-# expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}.csv'),sample=samples),
-# expand(os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_force_uptake.csv'),sample=samples),
