@@ -12,6 +12,7 @@ import os
 import pickle
 import itertools
 import random
+import traceback
 import scipy.cluster.hierarchy as hierarchy
 from functools import reduce
 from tqdm import tqdm
@@ -26,6 +27,7 @@ from sklearn.metrics import confusion_matrix, accuracy_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
+from statannotations.Annotator import Annotator
 
 
 plt.rcParams['figure.facecolor'] = 'white'
@@ -256,6 +258,17 @@ class BernoulliNull(NullClassifier):
 
 
 class RandomGrowthNull(NullClassifier):
+    """ Fit models on random growth data. 
+    
+    Parameters
+    ----------
+    Model: a BinaryGrowthClassifier class.
+
+    replace: bool, default=True
+        When generating random growth data, whether to sample with replacement.
+    
+    **kwargs: arguments passed to Model.
+    """
     def __init__(self, Model, replace=True, **kwargs):
         self.model = Model(**kwargs)
         self.replace = replace
@@ -294,6 +307,15 @@ class PretrainedModel(BinaryGrowthClassifier):
 
 
 class NearestNeighbor(BinaryGrowthClassifier):
+    """ K-nearest neighbor classifier. 
+    
+    Parameters
+    ----------
+    n_neighbors: int, default=1
+        Number of neighbors to use by default for kneighbors queries.
+    
+    **kwargs: arguments passed to KNeighborsClassifier.
+    """
     def __init__(self, n_neighbors=1, **kwargs):
         self.model = KNeighborsClassifier(n_neighbors=n_neighbors, **kwargs)
 
@@ -311,6 +333,21 @@ class NearestNeighbor(BinaryGrowthClassifier):
 
 
 class LassoLogisticRegression(BinaryGrowthClassifier):
+    """ Lasso logistic regression classifier.
+
+    Parameters
+    ----------
+    penalty: str, default='l1'
+        Used to specify the norm used in the penalization. The 'newton-cg', 'sag' and 'lbfgs' solvers support only l2 penalties.
+
+    C: float, default=1.0
+        Inverse of regularization strength; must be a positive float. Like in support vector machines, smaller values specify stronger regularization.
+
+    solver: str, default='liblinear'
+        Algorithm to use in the optimization problem.
+    
+    **kwargs: arguments passed to LogisticRegression.
+    """ 
     def __init__(self, penalty='l1', C=1.0, solver='liblinear', **kwargs):
         self.model = LogisticRegression(
             penalty=penalty, C=C, solver=solver, **kwargs)
@@ -327,13 +364,40 @@ class LassoLogisticRegression(BinaryGrowthClassifier):
 
 
 class GreedyFeatureSelection(BinaryGrowthClassifier):
+    """ Greedy feature selection classifier. 
+
+    Parameters
+    ----------
+    Model: a BinaryGrowthClassifier class.
+
+    model_params: dict, default=None
+        Parameters to pass to Model.
+
+    tree: ete3.Tree, default=None
+        Required if split_method=='ooc'. 
+    
+    n_max_features: int, default=5
+        Maximum number of selected features.
+    """
+
     def __init__(self,
-                 Model, model_params=None, tree=None,
-                 n_max_features=5, n_feature_subsample=None, improvement_cutoff=0.05,
-                 n_meta_split=10, split_method='ooc', splitter_params=None,
+                 Model, 
+                 model_params=None, 
+                 tree=None,
+                 n_max_features=5, 
+                 n_feature_subsample=None, 
+                 improvement_cutoff=0.05,
+                 n_meta_split=10, 
+                 split_method='ooc', 
+                 splitter_params=None,
                  pick_feature_metric='accuracy',
-                 threads=1, p=None, ff_results=None,
-                 save_meta_models=False, multithreading_batch=None, save_meta_training_results=True):
+                 threads=1, 
+                 p=None, 
+                 ff_results=None,
+                 save_meta_models=False, 
+                 multithreading_batch=None, 
+                 save_meta_training_results=True,
+                 verbose=True):
         self.tree = tree
 
         self.Model = Model
@@ -350,13 +414,17 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
         if multithreading_batch is None:
             multithreading_batch = threads * 5
         self.multithreading_batch = multithreading_batch
-        if p is None:
-            self._external_pool = False
-        else:
-            self._external_pool = True
+        # if p is None:
+        #     self._external_pool = False
+        # else:
+        #     self._external_pool = True
+        if threads>1 and p is None:
+            raise ValueError("A Pool object is required for multithreading.")
         self._p = p  # multiprocessing pool
         self.save_meta_models = save_meta_models
         self.improvement_cutoff = improvement_cutoff
+
+        self.verbose=verbose
 
         # Caching
         if ff_results is not None and os.path.exists(ff_results):
@@ -399,21 +467,22 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
         best_features, best_accuracies = [], []
         final_features, final_accuracies = None, None
 
-        if self.threads > 1 and self._p is None:
-            self._p = Pool(self.threads)
-            print("New pool started. ")
+        # if self.threads > 1 and self._p is None:
+        #     self._p = Pool(self.threads)
+        #     print("New pool started. ")
         for n_feature in range(self.n_max_features):
             if self.n_feature_subsample is None or self.n_feature_subsample > X.shape[1]:
                 iter_ = X.columns
             else:
                 iter_ = np.random.choice(
                     X.columns, self.n_feature_subsample, replace=False)
-
+            if self.verbose:
+                iter_=tqdm(iter_, desc="Iterating features...")
             _data_split_batch = []
             # results=[]
 
             # Run meta models on all data splits and all possible features
-            for i_feature, new_feature in enumerate(tqdm(iter_, desc="Iterating features...")):
+            for i_feature, new_feature in enumerate(iter_):
 
                 if len(best_features) > 0:
                     if new_feature in best_features[-1]:
@@ -468,10 +537,10 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
             if len(best_accuracies) > 1 and (best_accuracies[-1]/best_accuracies[-2]) > self.improvement_cutoff:
                 final_features, final_accuracy = best_features[-1], best_accuracies[-1]
 
-        if self.threads > 1 and not self._external_pool:
-            self._p.close()
-            print("Pool closed.")
-            self._p = None
+        # if self.threads > 1 and not self._external_pool:
+        #     self._p.close()
+        #     print("Pool closed.")
+        #     self._p = None
 
         if final_features is None:
             final_features, final_accuracy = best_features[-1], best_accuracies[-1]
@@ -861,42 +930,61 @@ class PredictionPipeline:
 
     Parameters:
     -----------
-    Model: a BasePredictionModel class
-    model_parames: dict. Parameters for the model. Default: None.
+    Model : a BasePredictionModel class
+
+    model_parames : dict. Default: None.
+        Parameters for the model. 
         If None, use the default parameters.
         If not carbon-specific, the same parameters are used for all carbons.
         If carbon specific, format the dictionary as {c1: params_1, ...}
-    threads: int. Number of threads to use.  Default: None.
+
+    threads : int. Default: None.
+        Number of threads to use.  
         If >1, use the passed Pool object (p) or a new Pool object is created (if p == None). Passing a Pool object is recommented because opening multiple pools hurts performance significantly. 
             - If a Pool object is passed, this parameters is actually not used. Just put in a number larger than 1 to enable multi-threading.
-    split_method: str, a DataSplitter class, or a dict. Default: 'random'.
+
+    split_method : str, a DataSplitter class, or a dict. Default: 'random'.
         'random': random split (RandomSplitter). 
         'ooc': out-of-clade split (LargeTreeTraverseSplitter).
         (DEPRECATED) 'ooc_dist_mat': out-of-clade split using the distance matrix (DistMatOOCSplitter).
         'leave_one_out': leave-one-out split (LeaveOneOutSplitter).
         A DataSplitter class
         or, a dictionary: user-specified test set samples, specific to each carbon: {c1: [[s1,s2,...], [s1,s2,...], ...], ...}
-    n_splits: int. Number of splits. Default: 10. 
+    
+    n_splits : int. Number of splits. Default: 10. 
         Passed into the Datasplitter.generate_splits method. Ignored if split_method is a dictionary.
-    splitter_params: dict. Parameters for the DataSplitter. Default: None.
+    
+    splitter_params : dict. Default: None.
+        Parameters for the DataSplitter. 
         If None, use the default parameters for all carbons.
         If not carbon-specific, the same parameters are used for all carbons.
         If carbon specific, format the dictionary as {c1: params_1, ...}. 
-    tree: ete3.Tree. Required for out-of-clade splits. Default: None.
-    carbons: a list of carbons to evalutate models on. 
-    save_models: bool. Whether to save the trained models objects. Default: False.
-        Saving model objects takes lots of memory/disk space. Dicouraged for large datasets. 
-    multithreading_batch: int. Number of split-train-test cycles passed to the multi-threading pool. If caching is enabled, this is also the caching batch size. Default: None. This is necessary for large datasets to save memory.
+    
+    tree : ete3.Tree. Default: None.
+        Required for out-of-clade splits. 
+    
+    carbons : list. Default: CARBONS.
+        a list of carbons to evalutate models on. 
+    
+    save_models : bool. Default: False.
+        Whether to save the trained models objects. 
+        Saving model objects takes lots of memory/disk space. Discouraged for large datasets. 
+    
+    multithreading_batch : int. Number of split-train-test cycles passed to the multi-threading pool. If caching is enabled, this is also the caching batch size. Default: None. This is necessary for large datasets to save memory.
         If None, use 5 * threads.
-    pass_pool_to_model: bool. Whether to pass the Pool object to the model. Used only for multi-threaded models. Default: False.
-    p: multiprocessing.Pool. A Pool object to use for multi-threading. Default: None.
+    
+    pass_pool_to_model : bool. Whether to pass the Pool object to the model. Used only for multi-threaded models. Default: False.
+    
+    p : multiprocessing.Pool. A Pool object to use for multi-threading. Default: None.
         If None, a new Pool object is created.
         Passing a pre-created Pool object is strongly recommended because opening multiple Pool objects hurts performance significantly.
-    ff_results: str. Caching file path. Default: None. Caching is necessary for large datasets to save memory.
+    
+    ff_results : str. Caching file path. Default: None. Caching is necessary for large datasets to save memory.
         If None, caching is disabled. 
         If not None, the pipeline checks if the files exists and if so, rename it to a non-existing file name. In the run, the pipeline pickles a batch of split-train-test cycle results (1 for single-threading, multithreading_batch for multi-threading) to the file. At the end of the run, the pipeline concatenates results as a DataFrame and saves it to the file.
-    allow_empty_set: bool. Whether to allow empty train or test sets. Default: False.
-        This is intended to fit FBAClassifier into the pipeline where this parameter is set True. For other models, this should be False. 
+    
+    allow_empty_set : bool. Default: False.
+        Whether to allow empty train or test sets. This is to fit FBAClassifier into the pipeline where this parameter is set True. For other models, this should be False. 
     """
 
     def __init__(self, Model, model_params=None, threads=1,
@@ -905,8 +993,9 @@ class PredictionPipeline:
                  carbons=CARBONS,
                  save_models=False,
                  multithreading_batch=None,
-                 pass_pool_to_model=False,
-                 p=None, ff_results=None,
+                 #pass_pool_to_model=False,
+                 p=None, 
+                 ff_results=None,
                  allow_empty_set=False):  # verbose=True,
         self.carbons = carbons
         self.Model = Model
@@ -933,11 +1022,13 @@ class PredictionPipeline:
         if multithreading_batch is None:
             multithreading_batch = threads * 5
         self.multithreading_batch = multithreading_batch
-        self.pass_pool_to_model = pass_pool_to_model
-        if p is None:
-            self._external_pool = False
-        else:
-            self._external_pool = True
+        # self.pass_pool_to_model = pass_pool_to_model
+        # if p is None:
+        #     self._external_pool = False
+        # else:
+        #     self._external_pool = True
+        if self.threads>1 and p is None:
+            raise ValueError("A Pool object is required for multi-threading.")
         self._p = p
 
         # Caching
@@ -969,8 +1060,11 @@ class PredictionPipeline:
 
         Parameters
         ----------
-        X: pandas.DataFrame. The feature matrix of shape (n_samples, n_features). The index is sample labels and the columns are feature names.
-        y: pandas.DataFrame. The binary trait matrix of shape (n_samples, n_carbons). The index is sample labels and the columns are carbon names. Samples with NaN values are ignored for the specific carbons. 
+        X : pandas.DataFrame. 
+            The feature matrix of shape (n_samples, n_features). The index is sample labels and the columns are feature names.
+        
+        y : pandas.DataFrame. 
+            The binary trait matrix of shape (n_samples, n_carbons). The index is sample labels and the columns are carbon names. Samples with NaN values are ignored for the specific carbons. 
         
         """
         self.X = X
@@ -1026,14 +1120,14 @@ class PredictionPipeline:
             raise ValueError("Please generate splits first.")
         _data_split_batch = []
 
-        if self.threads > 1 and self._p is None:
-            self._p = Pool(self.threads)
-        elif self.pass_pool_to_model:
-            model_params = self.model_params[self.carbons[0]]
-            if 'threads' in model_params and model_params['threads'] > 1:
-                self._p = Pool(model_params['threads'])
-                for c in self.carbons:
-                    self.model_params[c]['p'] = self._p
+        # if self.threads > 1 and self._p is None:
+        #     self._p = Pool(self.threads)
+        # elif self.pass_pool_to_model:
+        #     model_params = self.model_params[self.carbons[0]]
+        #     if 'threads' in model_params and model_params['threads'] > 1:
+        #         self._p = Pool(model_params['threads'])
+        #         for c in self.carbons:
+        #             self.model_params[c]['p'] = self._p
         for i_split, (c, train_samples, test_samples) in enumerate(tqdm(self.splits, desc='Training models...')):
             X_train, X_test = self.X.loc[train_samples,
                                          :], self.X.loc[test_samples, :]
@@ -1061,9 +1155,9 @@ class PredictionPipeline:
                 else:
                     continue
 
-        if self._p is not None and (not self._external_pool):
-            self._p.close()
-            self._p = None
+        # if self._p is not None and (not self._external_pool):
+        #     self._p.close()
+        #     self._p = None
         return self._load_final_results()
 
     def _save_new_results(self, results):
@@ -1091,6 +1185,76 @@ class PredictionPipeline:
                         break
         return pd.DataFrame(results)
 
+
+def run_multiple_models(models, datasets, DIR_output, 
+                        run_models=True, p=None,DIR_cache=None,DIR_results=None, 
+                        concatenate_output=True,ff_results_all=None,
+                        **kwargs):
+    if DIR_cache is None:
+        DIR_cache=os.path.join(DIR_output,'cache')
+        try:
+            os.makedirs(DIR_cache)
+        except FileExistsError:
+            pass
+    if DIR_results is None:
+        DIR_results=os.path.join(DIR_output,'results')
+        try:
+            os.makedirs(DIR_results)
+        except FileExistsError:
+            pass
+
+    if run_models:
+        print("Running models...")
+        for model_name, (Model, pipe_params) in models.items():
+            for dataset_name,dataset in datasets.items():
+                try:
+                    print(f"Running {dataset_name} {model_name}")
+                    ff_cache=os.path.join(DIR_cache,f'{dataset_name}_{model_name}.pk')
+                    ff_results=os.path.join(DIR_results,f'{dataset_name}_{model_name}.pk')
+                    if os.path.exists(ff_results):
+                        print("Already exists. Skipping. ")
+                        continue
+                    # pamameter priority: pipe_params > kwargs > default
+                    params={'tree':dataset['tree'], 'carbons': dataset['carbons'],'p':p, 'ff_results':ff_cache}
+                    params.update(kwargs)
+                    params.update(pipe_params)
+
+                    pipe=PredictionPipeline(Model, **params)
+                    pipe.generate_splits(dataset['ko_data'],dataset['growth_data'])
+                    results=pipe.run()
+                    with open(ff_results, 'wb') as f:
+                        pickle.dump(results, f)
+                    print(f"Finished {dataset_name} {model_name} ")
+                except Exception as e: 
+                    print(f"Failed to run {dataset_name} {model_name}")
+                    traceback.print_exc()
+    
+        print("Running models done.")
+
+    # Concatenate data
+    if concatenate_output:
+        print("Concatenating data...")
+        if ff_results_all is None:
+            ff_results_all=os.path.join(DIR_output,'results_all.pk')
+
+        results_all=[]
+        for model_name, (Model, pipe_params) in models.items():
+            for dataset_name,dataset in datasets.items():
+                try:
+                    ff_results=os.path.join(DIR_results,f'{dataset_name}_{model_name}.pk')
+                    results=pd.read_pickle(ff_results)
+                    results['model']=model_name
+                    results['dataset_name']=dataset_name
+                    results_all.append(results)
+                except Exception as e:
+                    print(e)
+                    print(f"Failed to load {dataset_name} {model_name}")
+
+        results_all=pd.concat(results_all,axis=0,ignore_index=True)
+        results_all.to_pickle(ff_results_all)
+        print("Concatenating data done.")
+        return results_all
+
 # ==============================================================================
 # Calculate statistics
 # ==============================================================================
@@ -1098,20 +1262,31 @@ class PredictionPipeline:
 
 
 def compare_models(df, model_pairs,
-                   seperate_by=['carbon_name'], model_key='model', metric='accuracy',
-                   p_threshold=0.05, multi_testing_correction=True):
+                   seperate_by='carbon_name', model_key='model', metric='accuracy',
+                   p_threshold=0.05, multi_testing_correction=True, force_positive_t=True):
     """ Compare models and calcualte statistics from prediction results. 
     
     Parameters
     ----------
-    df : pandas.DataFrame. PredictionPipeline output. 
-    model_pairs : list of tuples. Each tuple contains the names of models to be compared and a function to calculate statistics. The number of model names should equal to the number of argumetns of the function.
-    seperate_by : str or a list of str. keys to serperate the data by. Passed to df.groupby(). Default: 'carbon_name'. 
-    model_key : str. The column name for model names. Default: 'model'.
-    metric : str. The column name for metrics. Default: 'accuracy'.
+    df : pandas.DataFrame. 
+        PredictionPipeline output. 
+
+    model_pairs : list of tuples.
+        Each tuple contains the names of models to be compared and a function to calculate statistics. The number of model names should equal to the number of argumetns of the function.
+
+    seperate_by : str or a list of str. 
+        keys to serperate the data by. Passed to df.groupby(). Default: 'carbon_name'. 
+
+    model_key : str. 
+        The column name for model names. Default: 'model'.
+
+    metric : str. 
+        The column name for metrics. Default: 'accuracy'.\
+
     p_threshold: None, or a float. Default: 0.05. 
         If None, no p_threshold parameter is passed to the function.
         If a float, the function is passed a p_threshold parameter. 
+        
     multi_testing_correction : bool. Default: True. 
         If True, p_threshold is divided by the number of tests. 
 
@@ -1123,14 +1298,16 @@ def compare_models(df, model_pairs,
         seperate_by = seperate_by[0]
     gb = df.groupby(seperate_by)
     results = []
-    for name, group in gb:
+    if multi_testing_correction:
+        p_threshold = p_threshold/len(gb)/len(model_pairs) # Bonferroni correction
+    for name, group in tqdm(list(gb)):
         for _ in model_pairs:
             models = _[:-1]
             f = _[-1]
-            if p_threshold is not None:
-                if multi_testing_correction:
-                    p_threshold = p_threshold/(len(gb) * len(model_pairs)) # Bonferroni correction
-                f = lambda *args, **kwargs: f(*args, **kwargs, p_threshold=p_threshold)
+            # if p_threshold is not None:
+            #     if multi_testing_correction:
+            #         p_threshold = p_threshold/(len(gb)) # Bonferroni correction
+            #     f = lambda *args: _[-1](*args, p_threshold=p_threshold)
 
             if not isinstance(seperate_by, list) and not isinstance(seperate_by, tuple):
                 seperate_by = [seperate_by]
@@ -1143,31 +1320,39 @@ def compare_models(df, model_pairs,
                 arrs = [group[group[model_key] == model]
                         [metric].values for model in models]
                 out = f(*arrs)
-                if isinstance(out, dict):
-                    for k, v in out.items():
-                        result = dict(zip(seperate_by, name))
-                        result['stat'] = _prefix+'_'+k
-                        result['value'] = v
-                        results.append(result)
-                else:
+                # if isinstance(out, dict):
+                for k, v in out.items():
                     result = dict(zip(seperate_by, name))
-                    result['stat'] = _prefix+'_'+'statistic'
-                    result['value'] = out
+                    result['stat'] = _prefix+'_'+k
+                    result['value'] = v
                     results.append(result)
+                if 'p' in out:
+                    significant= (out['p'] < p_threshold)
+                    if 't' in out and force_positive_t and out['t'] < 0:
+                        significant = False
+                        result['p']=0.999
+                    result = dict(zip(seperate_by, name))
+                    result['stat'] = _prefix+'_'+'significant'
+                    result['value'] = significant
+                    results.append(result)
+                # else:
+                #     result = dict(zip(seperate_by, name))
+                #     result['stat'] = _prefix+'_'+'statistic'
+                #     result['value'] = out
+                #     results.append(result)
             except Exception as e:
                 print(e)
 
-    return pd.DataFrame(results).pivot(index=seperate_by, columns='stat', values='value').reset_index()
+    return pd.DataFrame(results).sort_values(by='stat').pivot(index=seperate_by, columns='stat', values='value').reset_index()
 
 
-def ttest(arr1, arr2, p_threshold=0.05, force_positive_t=False):
+def ttest(arr1, arr2):
     """ Calculate t-test statistics. 
     
     Parameters
     ----------
-    arr1, arr2: array-like of length >1. Assume no NaN values.
-    p_threshold: float. p-value threshold. Default: 0.05.
-    force_positive_t: bool. If True, only positive t values (arr1 mean > arr2 mean) are considered significant. Default: False.
+    arr1, arr2: array-like of length >1.
+        Assume no NaN values.
 
     Returns
     -------
@@ -1176,21 +1361,16 @@ def ttest(arr1, arr2, p_threshold=0.05, force_positive_t=False):
     if len(arr1) == 1 or len(arr2) == 1:
         raise ValueError("array length must be greater than 1")
     t, p = ttest_ind(arr1, arr2, equal_var=False)
-    if force_positive_t and t < 0:
-        significant = False
-    else:
-        significant = bool(p < p_threshold)
-    return {'t': t, 'p': p, 'significant': significant}
+    return {'t': t, 'p': p}
 
-def ttest_permutation(arr1, arr2, n_permutations=1E4, p_threshold=0.05, force_positive_t=False):
+def ttest_permutation(arr1, arr2, n_permutations=100000):
     """ Calculate t-test statistics and p-values from permutation. 
     
     Parameters
     ----------
-    arr1, arr2: array-like of length >1. Assume no NaN values.
-    p_threshold: float. p-value threshold. Default: 0.05.
-    force_positive_t: bool. If True, only positive t values (arr1 mean > arr2 mean) are considered significant. Default: False.
-
+    arr1, arr2: array-like of length >1. 
+        Assume no NaN values.
+  
     Returns
     -------
     A dict of t, p, and significant.
@@ -1198,11 +1378,7 @@ def ttest_permutation(arr1, arr2, n_permutations=1E4, p_threshold=0.05, force_po
     if len(arr1) == 1 or len(arr2) == 1:
         raise ValueError("array length must be greater than 1")
     t, p = ttest_ind(arr1, arr2, permutations=n_permutations, equal_var=False)
-    if force_positive_t and t < 0:
-        significant = False
-    else:
-        significant = bool(p < p_threshold)
-    return {'t': t, 'p': p, 'significant': significant}
+    return {'t': t, 'p': p}
 
 
 def single_model_summary(arr):
@@ -1210,7 +1386,8 @@ def single_model_summary(arr):
 
     Parameters
     ----------
-    arr: array-like. Assume no NaN values.
+    arr: array-like. 
+        Assume no NaN values.
 
     Returns
     -------
@@ -1222,14 +1399,18 @@ def single_model_summary(arr):
     return {'mean': arr.mean(), 'std': arr.std(), 'min': arr.min(), 'max': arr.max()}
 
 
-def one_sample_test(arr1, arr2, sign='>',p_threshold=0.05):
+def one_sample_test(arr1, arr2, sign='>'):
     """ When one array has one sample and the other array (a null model) has multiple samples. p-values is the proportion of samples in the null model that are greater/smaller (decided by the sign parameter) than the sample in the first array.
 
     Parameters
     ----------
     arr1: array-like of length 1. 
-    arr2: array-like of length >1. Assume no NaN values.
-    sign: str. One of ['>','>=','<','<=']. The p-value equals to mean(arr2 [sign] arr1). Default: '>'
+
+    arr2: array-like of length >1. 
+        Assume no NaN values.
+
+    sign: {'>','>=','<','<='}, default='>' 
+        The p-value equals to mean(arr2 [sign] arr1).
 
     Returns
     -------
@@ -1249,8 +1430,9 @@ def one_sample_test(arr1, arr2, sign='>',p_threshold=0.05):
         p = len(arr2[arr2 <= arr1])/len(arr2)
     else:
         raise ValueError("sign must be one of ['>','>=','<','<=']")
-
-    return {'p': p, 'significant': bool(p < p_threshold)}
+    # if p==0:
+    #     p=1/len(arr2) # avoid p=0
+    return {'p': p}
 
 
 # ============================================================
@@ -1267,15 +1449,30 @@ def plot_tree_matrix(tree, matrix, cbar=True,
     
     Parameters
     ----------
-    tree: ete3.Tree. The tree leaves and the matrix index must be identical. 
+    tree: ete3.Tree. 
+        The tree leaves and the matrix index must be identical. 
+
     matrix: a DataFrame or a list DataFrame. 
-    cbar: bool or a list of bool of size (1+len(matrix),). Whether to plot colorbar. Default: True.
+
+    cbar: bool or a list of bool of size (1+len(matrix),). Default: True.
+        Whether to plot colorbar. 
+
     figsize: tuple. Default: (15,20).
-    width_ratio: None, or a list of int of shape (1+len(matrix),). The width ratio of the tree and the matrices. Default: determined by matrix shapes.
-    titles: None or a list of str of shape (len(matrix),). The titles of the matrices. Default: ['']*len(matrix).
-    yticks: None/bool or a list of bool of shape (len(matrix),). Whether to plot yticks. Default: None. 
-    vmin, vmax: float. Passed into sns.heatmap(...). Default: 0, 1.
-    tree_params: dict. Plotting parameters for Bio.Phylo plotting. 
+
+    width_ratio: None, or a list of int of shape (1+len(matrix),). Default: determined by matrix shapes.
+        The width ratio of the tree and the matrices. 
+
+    titles: None or a list of str of shape (len(matrix),). Default: ['']*len(matrix).
+        The titles of the matrices. 
+
+    yticks: None/bool or a list of bool of shape (len(matrix),). Default: None. 
+        Whether to plot yticks. 
+
+    vmin, vmax: float. Default: 0, 1.
+        Passed into sns.heatmap(...). 
+
+    tree_params: dict. 
+        Plotting parameters for Bio.Phylo plotting. 
     """
 
     tree_bio = Phylo.read(StringIO(tree.write()), format='newick')
@@ -1484,14 +1681,110 @@ def plot_model_comparison(models,
     return plt.gcf(), axes
 
 
-def cal_feature_importance(results, kos_data, mechanism, trim=100):
+
+def plot_fancy_model_comparison(df,model_pairs, 
+                                stats=None,  multi_testing_correction=False,
+                                hue_order=None,colors=None, 
+                                **kwargs):
+    
+    if hue_order is None:
+        hue_order=np.unique(np.array(model_pairs).flatten())
+    df=df[df['model'].isin(hue_order )]
+
+    # four color blind friendly colors
+    if colors is None:
+        # 10 colors
+        COLORS = sns.color_palette("colorblind", len(hue_order))
+        colors = {model:color for model,color in zip(hue_order,COLORS) if 'null' not in model}
+    
+    for model in hue_order:
+        if 'null' in model and model not in colors:
+            colors[model]='grey'
+    
+    sns.catplot(data=df, x='carbon_name',y='accuracy',
+                hue='model', hue_order=hue_order, palette=colors,
+                kind='violin',cut=0,linewidth=0.75,inner='box',dodge=True,**kwargs)
+                # height=4, aspect=5,
+    #sns.stripplot(data=results_all[results_all['model'].str.contains('fba')], x='carbon_name',y='accuracy',hue='model',legend=False,jitter=False,dodge=True)
+
+    ax=plt.gca()
+    ax.grid()
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+
+
+    # For single data points, draw a colored line by by wizardry 
+    
+    gb=df.groupby(['carbon_name','model'])
+    half_violin=0.4/len(hue_order)
+    epsilon=0.03 
+
+    for i_c,carbon in enumerate(ax.get_xticklabels()):
+        for i_hue, model in enumerate(hue_order):
+            group=gb.get_group((carbon.get_text(),model))
+            if group.shape[0]==1:
+                x=i_c + half_violin * (-len(hue_order)+2*i_hue+1) # wizardry
+                y=group['accuracy'].values[0]
+                ax.plot([x-half_violin+epsilon,x+half_violin-epsilon],[y,y],color=colors[model],linewidth=2)
+        
+
+    # annotate p-value
+
+    if stats is None:
+        stats=compare_models(df, 
+                    model_pairs=[
+                        (*model_pair, ttest_permutation) for model_pair in model_pairs
+                    ],
+                    seperate_by='carbon_name',
+                    model_key='model',
+                    metric='accuracy',
+                    p_threshold=0.05,
+                    multi_testing_correction=False)
+    try:
+        stats=stats.set_index('carbon_name')
+    except KeyError:
+        pass
+    pairs=[]
+    p_values=[]
+
+    for c in df['carbon_name'].unique():
+        for m1,m2 in model_pairs:
+            pairs.append(((c,m1),(c,m2)))
+            p_values.append(stats.at[c,f'{m1}_{m2}_p'])
+
+    annot=Annotator(ax, 
+                    pairs, 
+                    data=df,
+                    x='carbon_name',
+                    y='accuracy',hue='model',
+                    hue_order=hue_order,kind='violin',cut=0,linewidth=0.75,inner='box',**kwargs)
+    if multi_testing_correction:
+        comparison_correction='Bonferroni'
+    else:
+        comparison_correction=None
+    annot.configure(test=None, comparisons_correction=comparison_correction).set_pvalues(p_values).annotate()
+    
+    plt.ylim(bottom=0)
+    ax.set_yticks(ax.get_yticks()[ax.get_yticks()<=1])
+
+    return plt.gcf(), stats
+
+def cal_feature_importance(results, kos_data, highlight=None, trim=100):
     df_fi = []
+    if highlight is None or isinstance(highlight, list) or isinstance(highlight, np.ndarray) or (isinstance(highlight, dict) and results['carbon_name'].iloc[0] not in highlight):
+        highlight={c: highlight for c in results['carbon_name'].unique()}
     for c, group in results.groupby('carbon_name'):
         arr_fis = np.array(list(group['feature_importances'].values))
         features = kos_data.columns
         df = pd.DataFrame({'features': features, 'carbon_name': [
                           c]*len(features), 'fi_mean': arr_fis.mean(axis=0), 'fi_std': arr_fis.std(axis=0)})
-        df['is_true_feature'] = df['features'].isin(mechanism).astype(int)
+        hl=highlight[c]
+        df['highlight'] = ''
+        if isinstance(hl, list) or isinstance(hl, np.ndarray):
+            df['highlight'] = df['features'].isin(highlight).astype(int)
+        elif isinstance(hl, dict):
+            for key, values in hl.items():
+                df.loc[df[df['features'].isin(values)].index.values, 'highlight'] = key
+
         if trim and trim < df.shape[0]:
             df = df.sort_values('fi_mean', ascending=False).iloc[:trim]
         df_fi.append(df.reset_index())
@@ -1575,3 +1868,24 @@ class BinaryLogicTree:
                 return self.left.calculate(value_map) or self.right.calculate(value_map)
             else:
                 raise ValueError
+
+
+# ============================================================
+# Organize data
+# ============================================================
+
+def finalize_data(ko_data, growth_data, tree,remove_prefix=False):    
+    samples=np.intersect1d(ko_data.index,growth_data.index)
+    tree_samples=[leaf.name for leaf in tree.get_leaves()]
+    tree=tree.copy()
+    if remove_prefix is not None:
+        for leaf in tree.get_leaves():
+            leaf.name=leaf.name.replace("matti_","").replace("zeqian_","").replace("bacdive_","")
+    
+    samples=np.intersect1d(samples,[node.name for node in tree.get_leaves()])
+    print(f"{len(samples)} samples: ", samples)
+
+    ko_data=ko_data.loc[samples]
+    growth_data=growth_data.loc[samples]
+    tree.prune(samples, preserve_branch_length=True)
+    return {'ko_data':ko_data, 'growth_data':growth_data,'tree':tree,'samples': samples, 'carbons':growth_data.columns.values}

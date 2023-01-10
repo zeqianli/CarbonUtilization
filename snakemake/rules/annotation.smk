@@ -2,7 +2,6 @@ rule prodigal:
     input:
         contig=os.path.join(config['DIR_assembly'],'{sample}.fasta')
     output:
-
         faa=os.path.join(config['DIR_faa'],'{sample}.faa'),
         gff=os.path.join(config['DIR_faa'],'{sample}.gff'),
         fna=os.path.join(config['DIR_fna'],'{sample}.fna')  

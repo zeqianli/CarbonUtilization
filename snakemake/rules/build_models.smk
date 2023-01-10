@@ -11,7 +11,7 @@ rule carveme:
         config['threads']
     shell:
         """
-        export PYTHONPATH=/home/zeqianli/project/bin/cplex/cplex/python/3.9/x86-64_linux 
+        export PYTHONPATH=/home/zeqianli/scratch-midway3/bin/cplex/cplex/python/3.9/x86-64_linux 
         carve {input.faa} --output {output.model_gapfill} -g {params.media} -i "{params.media}"
         carve {input.faa} --output {output.model} 
         """

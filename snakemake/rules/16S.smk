@@ -6,7 +6,7 @@ rule barrnap:
         assembly=os.path.join(config['DIR_assembly'], '{sample}.fasta')
     output:
         sixteens=os.path.join(config['DIR_16S'],'{sample}.16S.fna'),
-    conda: 'barrnap'
+    conda: 'sixteenS'
     threads: config['threads']
     shell:
         """
