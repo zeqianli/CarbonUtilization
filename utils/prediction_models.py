@@ -28,16 +28,24 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from statannotations.Annotator import Annotator
+import sklearn.metrics as metrics 
+from scipy.stats import entropy
+from statsmodels.stats.multitest import multipletests
 
 
 plt.rcParams['figure.facecolor'] = 'white'
 plt.rcParams['figure.figsize'] = (7, 5)
+plt.rcParams['axes.axisbelow'] = True
+
 pd.set_option('display.max_columns', None)
 
 # Carbon sources in Zeqian dataset.
 CARBONS = ['Arabinose', 'Glucuronic acid', 'Glycerol', 'Mannitol', 'Mannose',
            'Deoxyribose', 'Melibiose', 'Butyrate', 'Propionate', 'Raffinose']
 
+# default plotting colors
+COLORS=sns.color_palette("colorblind").as_hex()
+COLORS.pop(7) # remove grey
 
 # ============================================================
 # Prediction models
@@ -256,6 +264,25 @@ class BernoulliNull(NullClassifier):
         out.update({'null_model': 'bernoulli'})
         return out
 
+class IdentityNull(NullClassifier):
+    """ Identity null model. Predicts the same value for all samples. """
+
+    def __init__(self):
+        self.pred = None
+
+    def fit(self, X, y):
+        self.pred = int(y.mean()>=0.5)
+        return self
+
+    def predict(self, X):
+        return self.pred * np.ones(X.shape[0])
+
+    def get_params(self, deep=True):
+        out = super().get_params(deep=deep)
+        out.update({'null_model': 'bernoulli', 'identity_null_pred': self.pred})
+        return out
+
+
 
 class RandomGrowthNull(NullClassifier):
     """ Fit models on random growth data. 
@@ -378,6 +405,20 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
     
     n_max_features: int, default=5
         Maximum number of selected features.
+
+    n_feature_subsample: int, default=None
+        If not None, subsample features in each searching step to accelerate the selection process. 
+    
+    p: Pool, default=None
+        Required if threads>1. 
+    
+    save_meta_model: bool, default=False
+        If True, save the meta-models objects in the final data. Be careful about memory usage. 
+    
+    multithreading_batch: int or None, default=None 
+
+
+
     """
 
     def __init__(self,
@@ -386,7 +427,7 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
                  tree=None,
                  n_max_features=5, 
                  n_feature_subsample=None, 
-                 improvement_cutoff=0.05,
+                 # improvement_cutoff=0.05,
                  n_meta_split=10, 
                  split_method='ooc', 
                  splitter_params=None,
@@ -422,7 +463,7 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
             raise ValueError("A Pool object is required for multithreading.")
         self._p = p  # multiprocessing pool
         self.save_meta_models = save_meta_models
-        self.improvement_cutoff = improvement_cutoff
+        # self.improvement_cutoff = improvement_cutoff
 
         self.verbose=verbose
 
@@ -595,6 +636,129 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
         return {'final_features': self.final_features, 'final_accuracy': self.final_accuracy}
 
 
+def _entropy(arr):
+    if np.all(arr==0) or np.all(arr==1):
+        return 0
+    else:
+        return entropy(arr)
+
+def neg_conditional_entropy(arr1, arr2):
+    if isinstance(arr1,list):
+        arr1=np.array(arr1)
+    if arr1.ndim!=1:
+        arr1=(arr1 * np.array([[2**j for j in range(arr1.shape[1])] for i in range(arr1.shape[0])])).sum(axis=1) # binary coding
+    vs, counts = np.unique(arr1, return_counts=True)
+    ce=0
+
+    for v, count in zip(vs, counts):
+        ce+=-count/len(arr1)*_entropy(arr2[arr1==v])    
+    return ce
+
+def _pickleable_cal_nce(key, explainer, y):
+    nce=neg_conditional_entropy(explainer, y)
+    return key, nce
+
+class NCEFeatureSelection(BinaryGrowthClassifier):
+
+    def __init__(self,
+                 Model, model_params, 
+                 keep_top=5, max_features=5, n_feature_subsample=None, 
+                 threads=1, p=None, 
+                 # ff_results=None,
+                 # multithreading_batch=None, 
+                 save_feature_selection_data=True,
+                 verbose=False):
+        self.Model = Model
+        self.model_params = model_params
+        self.keep_top = keep_top
+        self.max_features = max_features
+        self.n_feature_subsample = n_feature_subsample
+
+        self.threads = threads 
+        if threads>1 and p is None:
+            raise ValueError("A Pool object is required for multithreading.")
+        self._p = p  # multiprocessing pool
+        
+        self.save_feature_selection_data  = save_feature_selection_data
+        self._feature_selection_data = []
+
+        self.verbose=verbose
+
+        # Caching
+        # if ff_results is not None and os.path.exists(ff_results):
+        #     print(f"Warning: output file {ff_results} exists. ")
+        #     i = 0
+        #     _spl = ff_results.split('.')
+        #     while os.path.exists(ff_results):
+        #         ff_results = '.'.join(_spl[:-1])+'_'+str(i)+'.'+_spl[-1]
+        #         i += 1
+        #     print(f"Changed to {ff_results}. ")
+        # self.ff_results = ff_results
+        # self._results = []
+
+        self._best_features, self._best_accuracies = None, None
+        self.final_features, self.final_features_nce, self.final_model = None, None, None
+
+    def fit(self,X,y):
+        df=self.get_top_features(X, y) # feature selection data 
+        if self.save_feature_selection_data:
+            self._feature_selection_data = df
+        self.final_features=df[df['n_features']==self.max_features].sort_values('nce')['features'].values[0]
+        self.final_features_nce=np.array([df[df['features_str']==(','.join(self.final_features[:(_+1)]))]['nce'].values[0] for _ in range(self.max_features)])
+
+        # train final model
+        self.final_model=self.Model(**self.model_params)
+        self.final_model.fit(X[self.final_features], y)
+
+    def predict(self, X):
+        return self.final_model.predict(X[self.final_features])
+
+    def get_params(self, deep=True):
+        return {'final_features': self.final_features, 'final_features_nce': self.final_features_nce}
+
+    def get_top_features(self,X, y):
+        if self.keep_top!=1 and isinstance(self.keep_top, float):
+            self.keep_top=int(self.keep_top*X.shape[1])
+        features=X.columns
+        if isinstance(y,pd.Series):
+            y=y.values
+        past_best=None
+        df=[]
+        
+        _iter=range(1, self.max_features+1)
+        if self.verbose:
+            _iter=tqdm(_iter, desc="Number of features")
+        for i in _iter:
+            _batch=[]
+            if self.n_feature_subsample is None:
+                features=X.columns
+            else:
+                features=np.random.choice(X.columns, self.n_feature_subsample, replace=False)
+            for feature in features:
+                if past_best is None:
+                    _batch.append(([feature], X[feature].values, y))
+                else:
+                    for past_features in past_best:
+                        if not feature in past_features:
+                            new_features=[*past_features, feature]
+                            _batch.append((new_features,X[new_features].values, y))
+            if self._p is None:
+                _res=[_pickleable_cal_nce(*args) for args in _batch]
+            else:
+                _res=self._p.starmap(_pickleable_cal_nce, _batch)
+            
+            _res=pd.DataFrame(_res, columns=["features", "nce"]).sort_values("nce", ascending=False)
+            if isinstance(self.save_feature_selection_data, int):
+                _res=_res.iloc[:self.save_feature_selection_data, :]
+            past_best=_res.iloc[:self.keep_top, :]['features'].values
+            df.append(_res)
+        df=pd.concat(df,axis=0,ignore_index=True)
+        df['n_features']=df['features'].apply(lambda x: len(x))
+        df['features_str']=df['features'].apply(lambda x: ','.join(x))
+        df=df.sort_values(['n_features',"nce"], ascending=[True,False])
+        return df
+
+
 # ============================================================
 # Data set split
 # ============================================================
@@ -608,6 +772,7 @@ def cal_dist_matrix_efficient(tree, df=True):
     Parameters:
     -----------
     tree: ete3.Tree object
+
     df: bool, default True. This parameter is used when calling the function recursively. User should user df=True. 
         If True, return the distance matrix as a pandas Dataframe of shape (n_leaves, n_leaves). 
         If False, return two lists: a list of tuple [(leaf1, leaf2, distance), ...] and a dictionary {leaf: distance to root, ...}. 
@@ -616,6 +781,7 @@ def cal_dist_matrix_efficient(tree, df=True):
     Returns:
     --------
     (Default) If df=True, return a pandas Dataframe of shape (n_leaves, n_leaves).
+
     If df=False, return two lists: a list of tuple [(leaf1, leaf2, distance), ...] and a dictionary {leaf: distance to root, ...}.
     """
 
@@ -672,6 +838,13 @@ class DataSplitter:
     """ Base clase for data spliters that split data into training sets and test sets.
 
     Child classes should implement at least two methods: __init__ and split. Implement generate_splits for efficiency.
+
+    Methods
+    -------
+    generate_splits: should be the most used method. 
+
+    split: generate a single split. Must be implemented by child classes. 
+
     """
 
     def __init__(self):
@@ -715,6 +888,15 @@ class LeaveOneOutSplitter(DataSplitter):
 
 
 class RandomSplitter(DataSplitter):
+    """ Random data split. 
+
+    Parameters
+    ----------
+    test_set_ratio: float, default=0.2
+        Ratio of test set size to the whole data set.
+
+    """
+
     def __init__(self, test_set_ratio=0.2):
         self.test_set_ratio = test_set_ratio
 
@@ -722,113 +904,41 @@ class RandomSplitter(DataSplitter):
         return np.random.choice(samples, size=int(len(samples)*self.test_set_ratio), replace=False)
 
 
-class OOCSplitter(DataSplitter):
-    def __init__(self, tree, growth_data,
-                 test_set_range=(0.2, 0.3),
-                 min_zeros=2,
-                 min_ones=2):
-
-        self.tree = tree
-        self.growth_data = growth_data
-        self.test_set_range = test_set_range
-        self.min_zeros = min_zeros
-        self.min_ones = min_ones
-
-        self.precomputed_samples = None
-        self.precomputed_splits = None
-
-    def compute_splits(self, samples):
-        self.precomputed_samples = samples
-
-    def generate_splits(self, samples, n, use_precomputed=False, **kwargs):
-        if not use_precomputed:
-            self.compute_splits(samples)
-        return [self.split(samples, use_precomputed=True, **kwargs) for _ in range(n)]
-
-    def split(self, samples, use_precomputed=False):
-        if not use_precomputed:
-            self.compute_splits(samples)
-        elif use_precomputed and self.precomputed_samples is None:
-            raise ValueError("No precomputed samples found.")
-        return random.choice(self.precomputed_splits)
-
-    def is_good_split(self, test_samples, samples):
-        if (len(test_samples)/len(samples)) < self.test_set_range[0] or (len(test_samples)/len(samples)) > self.test_set_range[1]:
-            return False
-        if self.min_zeros is not None and (self.growth_data[test_samples] == 0).sum() < self.min_zeros:
-            return False
-        if self.min_ones is not None and (self.growth_data[test_samples] == 1).sum() < self.min_ones:
-            return False
-        return True
-
-
-
-
-class TreeTraverseOOCSplitter(OOCSplitter):
-    def __init__(self, tree, growth_data,
-                 test_set_range=(0.2, 0.3),
-                 min_zeros=2,
-                 min_ones=2, n_max_clade=2):
-        super().__init__(tree, growth_data, test_set_range=test_set_range,
-                         min_zeros=min_zeros, min_ones=min_ones)
-        self.max_clade = 2
-
-        # TODO: two methods of finding clades
-        # 1. trave all clades and save the clade list. OK for small trees
-        # 2. iterate all single clades. When choosing, randomly select one/2/3/.. clades from them and check if it fits the criteria. repeat until satified. Do the next. Check repeatition. Set a max iteration number. Must for large trees.
-
-    def compute_splits(self, samples):
-        super().compute_splits(samples)
-
-        single_clades = []
-        clade_size_range = (int(
-            self.test_set_range[0]*len(samples)), int(self.test_set_range[1]*len(samples)))
-
-        tree = self.tree.copy()  # TODO: this is expensive. Test if this
-
-        for l in tree.get_leaves():
-            if l.name not in samples:
-                # This may leave empty leaves. May include empty leave names in the next step.
-                l.delete()
-
-        for t in tree.traverse():
-            if t.is_leaf():
-                continue
-            else:
-                leaves = [l.name for l in t.get_leaves() if len(l.name) > 0]
-                if len(leaves) > clade_size_range[1] or len(leaves) == 0:
-                    continue
-                else:
-                    single_clades.append(leaves)
-
-        # Merge
-        clades, clades_stat, clades_str = [], [], set()
-        for n_merge in range(1, self.max_clade+1):
-            for clades_merge in tqdm(list(itertools.combinations(single_clades, n_merge))):
-                if n_merge > 1:
-                    clade = np.sort(np.union1d(*clades_merge))
-                else:
-                    clade = clades_merge[0]
-                clade_str = ','.join(np.sort(clade))
-
-                if clade_str not in clades_str:
-                    clades.append(clade)
-                    clades_str.add(clade_str)
-                    clades_stat.append(
-                        {'clade': clade, 'n_merge': n_merge, 'clade_str': clade_str, 'clade_size': len(clade)})
-
-        self.precomputed_splits = []
-        for clade, clade_stat in zip(clades, clades_stat):
-            if self.is_good_split(clade, samples):
-                self.precomputed_splits.append(clade)
-
-
 class LargeTreeTraverseOOCSplitter(DataSplitter):
-    def __init__(self, tree, growth_data, single_clades=None,
+    """ Out-of-clade data split by iterating tree clades. Applicable to large trees. 
+    
+    Parameters
+    ----------
+    tree: ete3.Tree object
+
+    test_set_range: tuple 
+        Range of test set size ratio. 
+
+    single_clades: list or None, default=None
+        List of pre-computed single clades for the clade selection step. Precompute this to save time. 
+
+    n_max_clade: int, default=2
+        Max number of seperate clades in the test set. 
+
+    prefer_small_clade: bool, default=False
+        If true, single clade test sets are more likely to be selected. 
+    
+    growth_data: pd.Series 
+        Binary growth data. Used to when min_zeros and min_ones are larger than 1. 
+    
+    min_zeros, min_ones: int, default=0
+        Minimum sample numbers of zeros/ones in the test set. 
+    
+    time_out_iter: int or None, default=None
+        Maximum iterations when trying to construct a test set.  
+
+    """
+
+    def __init__(self, tree,  
                  test_set_range=(0.2, 0.3),
+                 single_clades=None,
                  n_max_clade=2, prefer_small_clade=False,
-                 min_zeros=2,
-                 min_ones=2, time_out_iter=None):
+                 growth_data=None,min_zeros=0, min_ones=0, time_out_iter=None):
 
         self.tree = tree
         self.single_clades = single_clades
@@ -836,6 +946,10 @@ class LargeTreeTraverseOOCSplitter(DataSplitter):
         self.test_set_range = test_set_range
         self.min_zeros = min_zeros
         self.min_ones = min_ones
+        
+        if (bool(min_ones) or bool(min_zeros)) and growth_data is None:
+            raise ValueError("Growth data is required if min_zeros or min_ones is larger than 1. ")
+
         self.prefer_small_clade = prefer_small_clade
         self.n_max_clade = n_max_clade
         if time_out_iter is None:
@@ -864,16 +978,17 @@ class LargeTreeTraverseOOCSplitter(DataSplitter):
     def compute_single_clades(self, tree, samples):
         clade_size_range = (int(
             self.test_set_range[0]*len(samples)), int(self.test_set_range[1]*len(samples)))
-
-        # TODO: this can be expensive. Test if this matters.
-        tree = tree.copy()
-        tree_cleaned = False
-        while not tree_cleaned:
-            tree_cleaned = True
-            for l in tree.get_leaves():
-                if l.name == '' or l.name not in samples:
-                    l.delete()
-                    tree_cleaned = False
+        
+        tree=self.tree.copy()
+        tree.prune(samples,preserve_branch_length=True)
+        # tree = tree.copy()
+        # tree_cleaned = False
+        # while not tree_cleaned:
+        #     tree_cleaned = True
+        #     for l in tree.get_leaves():
+        #         if l.name == '' or l.name not in samples:
+        #             l.delete()
+        #             tree_cleaned = False
 
         single_clades = [[]]  # including an empty clade
         for t in tree.traverse():
@@ -1079,10 +1194,7 @@ class PredictionPipeline:
                     splitter = RandomSplitter(**self.splitter_params)
                 elif self.split_method == 'ooc':
                     splitter = LargeTreeTraverseOOCSplitter(
-                        tree=self.tree, growth_data=y[c], **self.splitter_params)
-                # elif self.split_method == 'ooc_distmat':
-                #     splitter = DistMatOOCSplitter(
-                #         tree=self.tree, growth_data=y[c], **self.splitter_params)
+                        tree=self.tree, growth_data=y[c][sample_mask], **self.splitter_params)
                 elif self.split_method == 'leave_one_out':
                     splitter = LeaveOneOutSplitter(**self.splitter_params)
                 clades = splitter.generate_splits(sample_mask, self.n_splits)
@@ -1190,6 +1302,13 @@ def run_multiple_models(models, datasets, DIR_output,
                         run_models=True, p=None,DIR_cache=None,DIR_results=None, 
                         concatenate_output=True,ff_results_all=None,
                         **kwargs):
+    """ Run the split-train-test pipelines for multiple models on multiple datasets.
+
+    Parameters
+    ----------
+
+
+    """
     if DIR_cache is None:
         DIR_cache=os.path.join(DIR_output,'cache')
         try:
@@ -1263,7 +1382,8 @@ def run_multiple_models(models, datasets, DIR_output,
 
 def compare_models(df, model_pairs,
                    seperate_by='carbon_name', model_key='model', metric='accuracy',
-                   p_threshold=0.05, multi_testing_correction=True, force_positive_t=True):
+                   p_threshold=0.05,force_positive_t=True,
+                    multi_testing_correction=False, correct_by='carbons'):
     """ Compare models and calcualte statistics from prediction results. 
     
     Parameters
@@ -1326,15 +1446,15 @@ def compare_models(df, model_pairs,
                     result['stat'] = _prefix+'_'+k
                     result['value'] = v
                     results.append(result)
-                if 'p' in out:
-                    significant= (out['p'] < p_threshold)
-                    if 't' in out and force_positive_t and out['t'] < 0:
-                        significant = False
-                        result['p']=0.999
-                    result = dict(zip(seperate_by, name))
-                    result['stat'] = _prefix+'_'+'significant'
-                    result['value'] = significant
-                    results.append(result)
+                # if 'p' in out:
+                #     significant= (out['p'] < p_threshold)
+                #     if 't' in out and force_positive_t and out['t'] < 0:
+                #         significant = False
+                #         result['p']=0.999
+                #     result = dict(zip(seperate_by, name))
+                #     result['stat'] = _prefix+'_'+'significant'
+                #     result['value'] = significant
+                #     results.append(result)
                 # else:
                 #     result = dict(zip(seperate_by, name))
                 #     result['stat'] = _prefix+'_'+'statistic'
@@ -1342,8 +1462,26 @@ def compare_models(df, model_pairs,
                 #     results.append(result)
             except Exception as e:
                 print(e)
+    results=pd.DataFrame(results)
+    # Mutiple testing correction
+    def get_correct_pvalues(ps):
+        return multipletests(ps, method=multi_testing_correction)[1]
+    if multi_testing_correction:
+        print("Correcting p-values...")
+        if correct_by=="all":
+            _ind=results[results['stat'].str.endswith('_p')].index.values
+            results.loc[_ind, 'value'] = get_correct_pvalues(results.loc[_ind, 'value'].values)
+        elif correct_by=="carbons":
+            if (isinstance(seperate_by, list) and len(seperate_by)>1) or (isinstance(seperate_by,str)):
+                raise ValueError
+            seperate_by=seperate_by[0]
+            for carbon_name in df[seperate_by].unique():
+                _ind=results[(results['stat'].str.endswith('_p')) & (results[seperate_by]==carbon_name)].index.values
+                results.loc[_ind, 'value'] = get_correct_pvalues(results.loc[_ind, 'value'].values)
+        else:
+            raise ValueError
 
-    return pd.DataFrame(results).sort_values(by='stat').pivot(index=seperate_by, columns='stat', values='value').reset_index()
+    return results.sort_values(by='stat').pivot(index=seperate_by, columns='stat', values='value').reset_index()
 
 
 def ttest(arr1, arr2):
@@ -1591,6 +1729,7 @@ def plot_prediction_accuracy(result, ax=None, figsize=(10, 8), metric='accuracy'
 def plot_model_comparison(models,
                           metric='accuracy', p_pairs=None, carbons=CARBONS, pvalue_threshold=0.05,
                           axes=None, figsize=(15, 25),):
+    
     model_labels, null_labels = [], []
     models_concat = []
 
@@ -1683,87 +1822,159 @@ def plot_model_comparison(models,
 
 
 def plot_fancy_model_comparison(df,model_pairs, 
-                                stats=None,  multi_testing_correction=False,
-                                hue_order=None,colors=None, 
+                                stats=None,  metric='accuracy', multi_testing_correction=False,
+                                hue_order=None,colors=None, rotate_x=True, 
+                                pair_annotation=False, 
+                                single_annotation=True, null_models=None, y_single_annotation=1.05,
+                                show_null_model=True,
+                                # legend_title=None, legend_names=None,
                                 **kwargs):
+    """ Fancy model comparison plots, including proper coloring and p-value annotation. 
     
+    Parameters
+    ----------
+    df: pd.DataFrame
+        Result DataFrame from PredictionPipeline.
+
+    model_pairs : list of tuples
+        Pairs of models to be compared.
+    
+    stats: pd.DataFrame
+        Statistics calculated from compare_models. If None, compute using model pairs using ttest_permutation. Pre-compute is recommended because permutation tests are slow. 
+    
+    multi_testing_correction: bool
+        If True, apply multiple testing correction to p-values.
+    
+    hue_order: list or None, default=None
+        hue_order in sns.catplot(). Only models in hue_order are plotted.
+    
+    colors: dict or None
+        Dictionary of colors for models. Null models are automatically assigned grey. If None, assigned automatically.
+    
+    kwargs: keyward arugments passed to sns.catplot
+
+    """
+    
+
+
     if hue_order is None:
         hue_order=np.unique(np.array(model_pairs).flatten())
     df=df[df['model'].isin(hue_order )]
 
-    # four color blind friendly colors
+    if null_models is None:
+        null_models=[m for m in df['model'].unique() if 'null' in m]
+        print(null_models)
+    
+    if not show_null_model:
+        df=df[~(df['model'].isin(null_models))]
+        hue_order=[m for m in hue_order if m not in null_models]
+
+
     if colors is None:
         # 10 colors
-        COLORS = sns.color_palette("colorblind", len(hue_order))
-        colors = {model:color for model,color in zip(hue_order,COLORS) if 'null' not in model}
+        _models=[m for m in hue_order if 'null' not in m]
+        colors = {model:color for model,color in zip(_models,COLORS[:len(_models)])}
     
     for model in hue_order:
         if 'null' in model and model not in colors:
             colors[model]='grey'
     
-    sns.catplot(data=df, x='carbon_name',y='accuracy',
+
+    _catplot_kwargs=dict(data=df, x='carbon_name',y=metric,
                 hue='model', hue_order=hue_order, palette=colors,
-                kind='violin',cut=0,linewidth=0.75,inner='box',dodge=True,**kwargs)
+                kind='violin',cut=0,linewidth=0.75,inner='point',dodge=True)
+    _catplot_kwargs.update(kwargs)
+
+    sns.catplot(**_catplot_kwargs)
                 # height=4, aspect=5,
-    #sns.stripplot(data=results_all[results_all['model'].str.contains('fba')], x='carbon_name',y='accuracy',hue='model',legend=False,jitter=False,dodge=True)
+    sns.stripplot(data=df, x='carbon_name',y=metric,
+                hue='model', hue_order=hue_order,dodge=True,color='black', legend=False,
+                size=1)
 
     ax=plt.gca()
-    ax.grid()
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
-
-
-    # For single data points, draw a colored line by by wizardry 
+    ax.yaxis.grid(color='gray')
+    # ax.grid()
+    if rotate_x:
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     
-    gb=df.groupby(['carbon_name','model'])
-    half_violin=0.4/len(hue_order)
-    epsilon=0.03 
+    # For single data points, draw a colored line by by wizardry 
 
+    half_violin=0.4/len(hue_order)
+    def get_x_coord(i_x, i_hue):
+        # wizardry
+        x=i_c + half_violin * (-len(hue_order)+2*i_hue+1)
+        return x
+
+    gb=df.groupby(['carbon_name','model'])
+    epsilon=0.03 
     for i_c,carbon in enumerate(ax.get_xticklabels()):
         for i_hue, model in enumerate(hue_order):
-            group=gb.get_group((carbon.get_text(),model))
+            try:
+                group=gb.get_group((carbon.get_text(),model))
+            except KeyError:
+                pass
             if group.shape[0]==1:
-                x=i_c + half_violin * (-len(hue_order)+2*i_hue+1) # wizardry
-                y=group['accuracy'].values[0]
+                x=get_x_coord(i_c, i_hue) # wizardry
+                y=group[metric].values[0]
                 ax.plot([x-half_violin+epsilon,x+half_violin-epsilon],[y,y],color=colors[model],linewidth=2)
         
 
-    # annotate p-value
-
+    # Calculate statistics
     if stats is None:
-        stats=compare_models(df, 
-                    model_pairs=[
-                        (*model_pair, ttest_permutation) for model_pair in model_pairs
-                    ],
-                    seperate_by='carbon_name',
-                    model_key='model',
-                    metric='accuracy',
-                    p_threshold=0.05,
-                    multi_testing_correction=False)
+        raise ValueError
+        # stats=compare_models(df, 
+        #             model_pairs=[
+        #                 (*model_pair, ttest_permutation) for model_pair in model_pairs
+        #             ],
+        #             seperate_by='carbon_name',
+        #             model_key='model',
+        #             metric=metric,
+        #             p_threshold=0.05,
+        #             multi_testing_correction=False)
     try:
         stats=stats.set_index('carbon_name')
     except KeyError:
         pass
-    pairs=[]
-    p_values=[]
 
-    for c in df['carbon_name'].unique():
-        for m1,m2 in model_pairs:
-            pairs.append(((c,m1),(c,m2)))
-            p_values.append(stats.at[c,f'{m1}_{m2}_p'])
+    if single_annotation: 
+        for i_c,carbon in enumerate(ax.get_xticklabels()):
+            for i_hue, model in enumerate(hue_order):
+                if model in null_models:
+                    continue
+                significant=True
+                for null_m in null_models:
+                    if (('ooc' in null_m) and ('ooc' not in model)) or (('ooc' not in null_m) and ('ooc' in model)):
+                        continue
+                    significant=significant and (stats.at[carbon.get_text(),f'{model}_{null_m}_p']<=0.05)
+                    try:
+                        significant=significant and (stats.at[carbon.get_text(),f'{model}_{null_m}_t']>0)
+                    except KeyError:   
+                        pass          
+                if significant:
+                    x=get_x_coord(i_c, i_hue)
+                    ax.text(x, y_single_annotation,'*',fontsize=20, ha='center',va='bottom',color='black')
 
-    annot=Annotator(ax, 
-                    pairs, 
-                    data=df,
-                    x='carbon_name',
-                    y='accuracy',hue='model',
-                    hue_order=hue_order,kind='violin',cut=0,linewidth=0.75,inner='box',**kwargs)
-    if multi_testing_correction:
-        comparison_correction='Bonferroni'
-    else:
-        comparison_correction=None
-    annot.configure(test=None, comparisons_correction=comparison_correction).set_pvalues(p_values).annotate()
+
     
-    plt.ylim(bottom=0)
+    # Pair annotation via statannotation
+    if pair_annotation:
+        pairs=[]
+        p_values=[]
+        for c in df['carbon_name'].unique():
+            for m1,m2 in model_pairs:
+                pairs.append(((c,m1),(c,m2)))
+                p_values.append(stats.at[c,f'{m1}_{m2}_p'])
+
+        annot=Annotator(ax, pairs, **_catplot_kwargs)
+        if multi_testing_correction:
+            raise ValueError # This should be done before hand
+            # comparison_correction='Bonferroni'
+        else:
+            comparison_correction=None
+        annot.configure(test=None, comparisons_correction=comparison_correction).set_pvalues(p_values).annotate()
+    
+    
+    plt.ylim(bottom=0, top=1.2)
     ax.set_yticks(ax.get_yticks()[ax.get_yticks()<=1])
 
     return plt.gcf(), stats
@@ -1874,15 +2085,52 @@ class BinaryLogicTree:
 # Organize data
 # ============================================================
 
-def finalize_data(ko_data, growth_data, tree,remove_prefix=False):    
-    samples=np.intersect1d(ko_data.index,growth_data.index)
-    tree_samples=[leaf.name for leaf in tree.get_leaves()]
+def finalize_data(ko_data, growth_data, tree,remove_prefix=False,
+                min_zeros=None,min_ones=None, min_growth_data_samples=None):    
+    """ Keep samples with complete KO, growth, and tree data, and organize to a dictionary format. 
+
+    Parameters
+    ----------
+    ko_data: pd.DataFrame (n_samples, n_features)
+        KO matrix. Indices are samples and columns are KOs. 
+    
+    growth_data: pd.DataFrame (n_samples, n_carbons)
+        Growth data. Indices are samples and columns are carbon name.
+    
+    tree: ete3.Tree
+        Phylogenetic tree. 
+    
+    remove_prefix: bool, default=False
+        If true, remove "_zeqian", "_matti", and "_bacdive" from leaf names in tree.
+    
+    """
+
     tree=tree.copy()
     if remove_prefix is not None:
         for leaf in tree.get_leaves():
             leaf.name=leaf.name.replace("matti_","").replace("zeqian_","").replace("bacdive_","")
-    
+
+    # Remove samples with incomplete data
+    samples=np.intersect1d(ko_data.index,growth_data.index)
     samples=np.intersect1d(samples,[node.name for node in tree.get_leaves()])
+
+    # Remove carbons with not enough samples
+    growth_data=growth_data.loc[samples,:]
+    if min_growth_data_samples is not None:
+        cs=growth_data.columns[(growth_data.count(axis=0))>=min_growth_data_samples].values
+        growth_data=growth_data.loc[:,cs]
+
+    if min_zeros is not None:
+        cs=growth_data.columns[((growth_data==0).sum(axis=0))>=min_zeros].values
+        growth_data=growth_data.loc[:,cs]
+
+    if min_ones is not None:
+        cs=growth_data.columns[((growth_data==1).sum(axis=0))>=min_ones].values
+        growth_data=growth_data.loc[:,cs]
+    growth_data=growth_data.dropna(axis=0, how='all')
+    samples=np.intersect1d(ko_data.index,growth_data.index)
+    samples=np.intersect1d(samples,[node.name for node in tree.get_leaves()])
+
     print(f"{len(samples)} samples: ", samples)
 
     ko_data=ko_data.loc[samples]
