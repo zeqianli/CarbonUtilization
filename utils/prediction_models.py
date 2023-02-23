@@ -40,8 +40,7 @@ plt.rcParams['axes.axisbelow'] = True
 pd.set_option('display.max_columns', None)
 
 # Carbon sources in Zeqian dataset.
-CARBONS = ['Arabinose', 'Glucuronic acid', 'Glycerol', 'Mannitol', 'Mannose',
-           'Deoxyribose', 'Melibiose', 'Butyrate', 'Propionate', 'Raffinose']
+CARBONS = ['Arabinose', 'Butyrate','Deoxyribose','Glucuronic acid', 'Glycerol', 'Mannitol', 'Mannose', 'Melibiose', 'Propionate', 'Raffinose']
 
 # default plotting colors
 COLORS=sns.color_palette("colorblind").as_hex()
@@ -575,8 +574,8 @@ class GreedyFeatureSelection(BinaryGrowthClassifier):
                 best_features.append([best_new_feature])
                 best_accuracies.append(best_new_accuracy)
 
-            if len(best_accuracies) > 1 and (best_accuracies[-1]/best_accuracies[-2]) > self.improvement_cutoff:
-                final_features, final_accuracy = best_features[-1], best_accuracies[-1]
+            # if len(best_accuracies) > 1 and (best_accuracies[-1]/best_accuracies[-2]) > self.improvement_cutoff:
+            #     final_features, final_accuracy = best_features[-1], best_accuracies[-1]
 
         # if self.threads > 1 and not self._external_pool:
         #     self._p.close()
@@ -1826,7 +1825,8 @@ def plot_fancy_model_comparison(df,model_pairs,
                                 hue_order=None,colors=None, rotate_x=True, 
                                 pair_annotation=False, 
                                 single_annotation=True, null_models=None, y_single_annotation=1.05,
-                                show_null_model=True,
+                                show_null_model=True, 
+                                legend_col=5,
                                 # legend_title=None, legend_names=None,
                                 **kwargs):
     """ Fancy model comparison plots, including proper coloring and p-value annotation. 
@@ -1877,12 +1877,15 @@ def plot_fancy_model_comparison(df,model_pairs,
     
     for model in hue_order:
         if 'null' in model and model not in colors:
-            colors[model]='grey'
+            if model.startswith('null'):
+                colors[model]='grey'
+            elif model.startswith('identity_null'):
+                colors[model]='silver'
     
 
     _catplot_kwargs=dict(data=df, x='carbon_name',y=metric,
                 hue='model', hue_order=hue_order, palette=colors,
-                kind='violin',cut=0,linewidth=0.75,inner='point',dodge=True)
+                kind='violin',cut=0,linewidth=0.75,inner='point',dodge=True,legend_out=False)
     _catplot_kwargs.update(kwargs)
 
     sns.catplot(**_catplot_kwargs)
@@ -1890,6 +1893,7 @@ def plot_fancy_model_comparison(df,model_pairs,
     sns.stripplot(data=df, x='carbon_name',y=metric,
                 hue='model', hue_order=hue_order,dodge=True,color='black', legend=False,
                 size=1)
+    sns.move_legend(plt.gca(),loc='upper center', bbox_to_anchor=(0.5, 1.3), ncol=legend_col)
 
     ax=plt.gca()
     ax.yaxis.grid(color='gray')
@@ -1907,6 +1911,8 @@ def plot_fancy_model_comparison(df,model_pairs,
 
     gb=df.groupby(['carbon_name','model'])
     epsilon=0.03 
+    single_coords={}
+
     for i_c,carbon in enumerate(ax.get_xticklabels()):
         for i_hue, model in enumerate(hue_order):
             try:
@@ -1916,8 +1922,16 @@ def plot_fancy_model_comparison(df,model_pairs,
             if group.shape[0]==1:
                 x=get_x_coord(i_c, i_hue) # wizardry
                 y=group[metric].values[0]
-                ax.plot([x-half_violin+epsilon,x+half_violin-epsilon],[y,y],color=colors[model],linewidth=2)
-        
+                try:
+                    single_coords[model]['x'].append(x)
+                    single_coords[model]['y'].append(y)
+                except KeyError:
+                    single_coords[model]={'x':[x], 'y':[y]}
+                            
+                # ax.plot([x-half_violin+epsilon,x+half_violin-epsilon],[y,y],color=colors[model],linewidth=2)
+    for model in single_coords:
+        ax.plot(single_coords[model]['x'],single_coords[model]['y'],'X',color=colors[model],markersize=10)
+    # ax.plot(single_xs,single_ys,'X',color=colors['model'],markersize=3)
 
     # Calculate statistics
     if stats is None:
@@ -1976,6 +1990,7 @@ def plot_fancy_model_comparison(df,model_pairs,
     
     plt.ylim(bottom=0, top=1.2)
     ax.set_yticks(ax.get_yticks()[ax.get_yticks()<=1])
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', rotation_mode='anchor')
 
     return plt.gcf(), stats
 

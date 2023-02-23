@@ -1,0 +1,10 @@
+DIR_faa: "/home/zeqianli/project/zeqian/Carbon/data/zeqian/faa"
+DIR_CARVEME: "/home/zeqianli/project/zeqian/Carbon/data/figure_data/SI/fba_gapfilling/fba_multiple_gapfilling/carveme"
+DIR_FBA_PREDICTION: "/home/zeqianli/project/zeqian/Carbon/data/figure_data/SI/fba_gapfilling/fba_multiple_gapfilling/predictions"
+FILE_BIGG_METABOLITES: "/home/zeqianli/Kuehn/Carbon/snakemake/config/bigg_models_metabolites.txt" # BIGG metabolite file 
+FILE_media: "/home/zeqianli/Kuehn/Carbon/workflows/gapfill/config/media.tsv"
+FILE_INITIAL_MEDIUM: "/home/zeqianli/Kuehn/Carbon/snakemake/config/media_cfree.tsv"
+
+
+# Parameters
+threads: 48

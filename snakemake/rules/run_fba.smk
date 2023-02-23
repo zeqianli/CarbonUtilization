@@ -1,5 +1,3 @@
-import re 
-
 rule run_fba:
     input:
         model=os.path.join(config['DIR_CARVEME'],'{sample}.xml'),
@@ -10,7 +8,6 @@ rule run_fba:
         growth_gapfill=os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_gapfill.csv'),
         growth_gapfill_force_uptake=os.path.join(config['DIR_FBA_PREDICTION'],'{sample}_gapfill_force_uptake.csv')
     params:
-        threshold=config['fba_growth_threshold'],
         initial_medium=config['FILE_INITIAL_MEDIUM']
     conda: 'fba'
     shell:
