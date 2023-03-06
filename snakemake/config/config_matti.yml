@@ -1,25 +1,19 @@
-# Paths
-DIR_output: "/home/zeqianli/project/zeqian/Carbon/data/matti"
+# User specified paths and paramters
+threads: 48 # Threads
+DIR_output: "/home/zeqianli/project/zeqian/Carbon/data/matti" # Output directory
 # FILE_sample_list: "/home/zeqianli/Kuehn/Carbon/snakemake/config/strains_test.txt"
+PATH_KOFAMSCAN_PROFILES: "/home/zeqianli/scratch-midway3/bin/kofamscan/profiles" # Database path for KofamScan
+PATH_KOFAMSCAN_KO_LIST: "/home/zeqianli/scratch-midway3/bin/kofamscan/ko_list" # KO list path for KofamScan
+FILE_BIGG_METABOLITES: "/home/zeqianli/Kuehn/Carbon/snakemake/config/bigg_models_metabolites.txt" # BIGG metabolite file 
+FILE_INITIAL_MEDIUM: "/home/zeqianli/Kuehn/Carbon/snakemake/config/media_cfree.tsv" # Initial c-free medium for FBA simulation
+PATH_CPLEX: /home/zeqianli/scratch-midway3/bin/cplex/cplex/python/3.9/x86-64_linux # CPLEX path 
 
-# Genomes
+# Paths relative to DIR_output
 DIR_assembly: "assembly" # Assembly files
 DIR_faa: "faa" # faa files
 DIR_fna: "fna" # faa files
-
-# Annotation
 DIR_16S: "16S"
 DIR_KOFAMSCAN: "kofamscan" # KofamScan output
-PATH_KOFAMSCAN_PROFILES: "/home/zeqianli/scratch-midway3/bin/kofamscan/profiles" # Database path for KofamScan
-PATH_KOFAMSCAN_KO_LIST: "/home/zeqianli/scratch-midway3/bin/kofamscan/ko_list" # KO list path for KofamScan
 DIR_TEMP: ".tmp" # Temperature output directory for KofamScan
-
-# FBA
 DIR_CARVEME: "carveme" # Carveme output
-DIR_MEMOTE: "memote" # Memote output
 DIR_FBA_PREDICTION: "fba_prediction" # FBA prediction output
-FILE_BIGG_METABOLITES: "/home/zeqianli/Kuehn/Carbon/snakemake/config/bigg_models_metabolites.txt" # BIGG metabolite file 
-FILE_INITIAL_MEDIUM: "/home/zeqianli/Kuehn/Carbon/snakemake/config/media_cfree.tsv" # Initial c-free medium for FBA simulation
-
-# Parameters
-threads: 48

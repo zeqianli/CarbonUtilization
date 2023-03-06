@@ -1,7 +1,7 @@
 """ Utilities for the carbon utilization project. 
 
 @author: Zeqian Li
-@contact: zeqianli@uchicago.edu
+@contact: zeqianli.chicago@gmail.com
 """
 
 import numpy as np
@@ -42,7 +42,7 @@ pd.set_option('display.max_columns', None)
 # Carbon sources in Zeqian dataset.
 CARBONS = ['Arabinose', 'Butyrate','Deoxyribose','Glucuronic acid', 'Glycerol', 'Mannitol', 'Mannose', 'Melibiose', 'Propionate', 'Raffinose']
 
-# default plotting colors
+# default colors
 COLORS=sns.color_palette("colorblind").as_hex()
 COLORS.pop(7) # remove grey
 
