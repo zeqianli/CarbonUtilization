@@ -758,6 +758,41 @@ class NCEFeatureSelection(BinaryGrowthClassifier):
         return df
 
 
+class SelectedFeatures(BinaryGrowthClassifier):
+    """ Wrapper for models that only use a subset of features.
+    
+    Parameters
+    ----------
+    Model: a BinaryGrowthClassifier class.
+    model_params: dict
+        Parameters to pass to Model.
+    selected_features: list of str
+    intersect: bool, default=True
+        Whether to intersect selected_features with the features in X. Doing this step prior to training and setting intersect=False can speed up training.
+    """
+
+    def __init__(self, Model, model_params, selected_features,intersect=True):
+        self.Model=Model
+        self.model_params=model_params
+        self.selected_features=selected_features
+        self._intersect=intersect
+        self._model=None
+    
+    def fit(self, X, y):
+        self._model=self.Model(**self.model_params)
+        if self._intersect:
+            self.selected_features=np.intersect1d(X.columns, self.selectd_features)
+        self._model.fit(X.loc[:,self.selected_features],y)
+    
+    def predict(self, X):
+        return self._model.predict(X.loc[:,self.selected_features])
+    
+    def get_params(self, deep=True):
+        out={'model_name':self.Model.__name__, 'selected_features':self.selected_features}
+        out.update(self._model.get_params())
+        return out
+
+
 # ============================================================
 # Data set split
 # ============================================================
@@ -1377,12 +1412,18 @@ def run_multiple_models(models, datasets, DIR_output,
 # Calculate statistics
 # ==============================================================================
 
-
+def _pickleable_calc_stats(f,arrs, _prefix,name):
+    try:
+        out=f(*arrs)
+    except Exception as e:
+        print(e)
+        out={}
+    return out, _prefix,name
 
 def compare_models(df, model_pairs,
                    seperate_by='carbon_name', model_key='model', metric='accuracy',
                    p_threshold=0.05,force_positive_t=True,
-                    multi_testing_correction=False, correct_by='carbons'):
+                    multi_testing_correction=False, correct_by='carbons', p=None):
     """ Compare models and calcualte statistics from prediction results. 
     
     Parameters
@@ -1416,51 +1457,37 @@ def compare_models(df, model_pairs,
     if isinstance(seperate_by, list) and len(seperate_by) == 1:
         seperate_by = seperate_by[0]
     gb = df.groupby(seperate_by)
-    results = []
-    if multi_testing_correction:
-        p_threshold = p_threshold/len(gb)/len(model_pairs) # Bonferroni correction
-    for name, group in tqdm(list(gb)):
+
+    _multithreading_batch=[]
+    for name, group in list(gb):
         for _ in model_pairs:
             models = _[:-1]
             f = _[-1]
-            # if p_threshold is not None:
-            #     if multi_testing_correction:
-            #         p_threshold = p_threshold/(len(gb)) # Bonferroni correction
-            #     f = lambda *args: _[-1](*args, p_threshold=p_threshold)
-
             if not isinstance(seperate_by, list) and not isinstance(seperate_by, tuple):
                 seperate_by = [seperate_by]
             if not isinstance(name, tuple):
                 name = (name,)
 
             _prefix = '_'.join(models)
-
-            try:
-                arrs = [group[group[model_key] == model]
+            arrs = [group[group[model_key] == model]
                         [metric].values for model in models]
-                out = f(*arrs)
-                # if isinstance(out, dict):
-                for k, v in out.items():
-                    result = dict(zip(seperate_by, name))
-                    result['stat'] = _prefix+'_'+k
-                    result['value'] = v
-                    results.append(result)
-                # if 'p' in out:
-                #     significant= (out['p'] < p_threshold)
-                #     if 't' in out and force_positive_t and out['t'] < 0:
-                #         significant = False
-                #         result['p']=0.999
-                #     result = dict(zip(seperate_by, name))
-                #     result['stat'] = _prefix+'_'+'significant'
-                #     result['value'] = significant
-                #     results.append(result)
-                # else:
-                #     result = dict(zip(seperate_by, name))
-                #     result['stat'] = _prefix+'_'+'statistic'
-                #     result['value'] = out
-                #     results.append(result)
-            except Exception as e:
-                print(e)
+            _multithreading_batch.append((f, arrs, _prefix, name))
+
+    if p is None:
+        # Single thread mode 
+        _multithreading_results=[_pickleable_calc_stats(*_) for _ in tqdm(_multithreading_batch)]
+    else:
+        _multithreading_results=p.starmap(_pickleable_calc_stats, _multithreading_batch)
+    
+    # Format output
+    results = []
+    for out, _prefix, name in _multithreading_results:
+        for k, v in out.items():
+            result = dict(zip(seperate_by, name))
+            result['stat'] = _prefix+'_'+k
+            result['value'] = v
+            results.append(result)
+            
     results=pd.DataFrame(results)
     # Mutiple testing correction
     def get_correct_pvalues(ps):
@@ -1994,13 +2021,18 @@ def plot_fancy_model_comparison(df,model_pairs,
 
     return plt.gcf(), stats
 
-def cal_feature_importance(results, kos_data, highlight=None, trim=100):
+def cal_feature_importance(results, kos_data=None, highlight=None, trim=100,feature_key=None):
     df_fi = []
     if highlight is None or isinstance(highlight, list) or isinstance(highlight, np.ndarray) or (isinstance(highlight, dict) and results['carbon_name'].iloc[0] not in highlight):
         highlight={c: highlight for c in results['carbon_name'].unique()}
     for c, group in results.groupby('carbon_name'):
         arr_fis = np.array(list(group['feature_importances'].values))
-        features = kos_data.columns
+        if feature_key is not None:
+            features=group[feature_key].iloc[0]
+        elif kos_data is not None:
+            features = kos_data.columns
+        else:
+            raise ValueError
         df = pd.DataFrame({'features': features, 'carbon_name': [
                           c]*len(features), 'fi_mean': arr_fis.mean(axis=0), 'fi_std': arr_fis.std(axis=0)})
         hl=highlight[c]
@@ -2009,10 +2041,11 @@ def cal_feature_importance(results, kos_data, highlight=None, trim=100):
             df['highlight'] = df['features'].isin(highlight).astype(int)
         elif isinstance(hl, dict):
             for key, values in hl.items():
+                
                 df.loc[df[df['features'].isin(values)].index.values, 'highlight'] = key
-
+        df = df.sort_values('fi_mean', ascending=False)
         if trim and trim < df.shape[0]:
-            df = df.sort_values('fi_mean', ascending=False).iloc[:trim]
+            df =df.iloc[:trim]
         df_fi.append(df.reset_index())
 
     df_fi = pd.concat(df_fi, axis=0, ignore_index=True)
