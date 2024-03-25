@@ -1,0 +1,14 @@
+jupyter
+pandas
+numpy
+scipy
+sklearn
+matplotlib
+ete3
+seaborn
+osfclient
+tqdm
+statannotation
+statsmodels
+biopython
+requests

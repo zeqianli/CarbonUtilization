@@ -2,6 +2,8 @@
 
 Zeqian Li, Ahmed Selim, Seppe Kuehn
 
+Last update: Mar 24th, 2024
+
 ## Files
 
 - `snakemake`: snakemake pipeline for bioinformatic pipeline and fba simulation. See `snakemake/README`.
@@ -13,11 +15,28 @@ Zeqian Li, Ahmed Selim, Seppe Kuehn
 
 ## Data
 
-Data files are deposited to the [Open Science Framework (OSF)](https://doi.org/10.17605/OSF.IO/JWKR7).
+Data files are deposited to the [Open Science Framework (OSF)](https://osf.io/jwkr7/)
+
+## Setup
+
+1. If you use conda environments or pyenv, create and switch to a new environment. 
+2. Install packages
+```
+pip install -r requirements.txt
+```
+3. Download data
+```
+mkdir data && cd data
+osf -p jwkr7 clone
+mv -v data/jwkr7/osfstorage/* .
+rm -rf jwkr7
+```
+
+`figure_data.zip` contains pre-trained data saved in pickle. 
 
 ## Citation
 
-TODO: preprint link
+[Li, Zeqian, Ahmed Selim, and Seppe Kuehn. "Statistical prediction of microbial metabolic traits from genomes." PLOS Computational Biology 19, no. 12 (2023): e1011705.](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011705)
 
 ## Contact 
 
